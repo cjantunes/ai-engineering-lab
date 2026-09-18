@@ -4,7 +4,7 @@
 $VenvPython = ".\.venv\Scripts\python.exe"
 
 Write-Host ""
-Write-Host "=== Pos IA - ChatGPT ==="
+Write-Host "=== AI Engineering Lab ==="
 Write-Host ""
 
 # 1. Verifica se a .venv existe

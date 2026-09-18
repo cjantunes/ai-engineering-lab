@@ -1,4 +1,4 @@
-# Pos IA - ChatGPT
+# AI Engineering Lab
 
 Projeto de formação prática em Engenharia de Inteligência Artificial.
 
