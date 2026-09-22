@@ -1,4 +1,7 @@
-from src.retrieval.retrieval_evaluator import evaluate_retrieval
+from src.retrieval.retrieval_evaluator import (
+    analyze_retrieval_trace,
+    evaluate_retrieval,
+)
 
 def test_retrieval_complete():
     """Teste 1 — Retrieval completo (todos os relevantes encontrados)."""
@@ -267,6 +270,47 @@ def test_ranking_physical_order_consistency():
     except AssertionError as e:
         print("Teste 11 — Consistência do ranking: FALHOU")
 
+def test_analyze_retrieval_trace():
+    relevant_documents = ["DOC_A", "DOC_B", "DOC_X"]
+
+    trace = {
+        "vector_results": [
+            {"document_id": "DOC_C", "rank": 1},
+            {"document_id": "DOC_A", "rank": 2},
+            {"document_id": "DOC_B", "rank": 3},
+        ],
+        "lexical_results": [
+            {"document_id": "DOC_B", "rank": 1},
+        ],
+        "rrf_results": [
+            {"document_id": "DOC_B", "rank": 1},
+            {"document_id": "DOC_A", "rank": 2},
+        ],
+        "reranked_results": [
+            {"document_id": "DOC_A", "rank": 1},
+            {"document_id": "DOC_B", "rank": 2},
+        ],
+        "final_results": [
+            {"document_id": "DOC_A", "rank": 1},
+        ],
+    }
+
+    result = analyze_retrieval_trace(relevant_documents, trace)
+
+    assert result["DOC_A"]["failure_reason"] == "success"
+    assert result["DOC_A"]["first_seen_stage"] == "vector_results"
+    assert result["DOC_A"]["last_seen_stage"] == "final_results"
+    assert result["DOC_A"]["failure_stage"] is None
+
+    assert result["DOC_B"]["failure_reason"] == "lost_after_retrieval"
+    assert result["DOC_B"]["last_seen_stage"] == "reranked_results"
+    assert result["DOC_B"]["failure_stage"] == "final_results"
+
+    assert result["DOC_X"]["failure_reason"] == "never_retrieved"
+    assert result["DOC_X"]["first_seen_stage"] is None
+    assert result["DOC_X"]["last_seen_stage"] is None
+    assert result["DOC_X"]["failure_stage"] is None
+
 # ==========================================================
 # Execução manual dos testes
 # ==========================================================
@@ -289,8 +333,12 @@ if __name__ == "__main__":
     test_duplicate_rank()
     test_rank_not_starting_at_one()
     test_rank_boolean()
+
     print("\n--- Testes de validação (120.3) ---")
     test_ranking_physical_order_consistency()
+
+    print("\n--- Testes de validação (120.4) ---")
+    test_analyze_retrieval_trace()
 
     print("\n" + "=" * 60)
     #print("TODOS OS TESTES PASSARAM!")

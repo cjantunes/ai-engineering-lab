@@ -1,3 +1,69 @@
+# =============================================================
+# FAILURE ANALYSIS
+# =============================================================
+
+RETRIEVAL_STAGES = (
+    "vector_results",
+    "lexical_results",
+    "rrf_results",
+    "reranked_results",
+    "final_results",
+)
+
+
+def analyze_retrieval_trace(relevant_documents, trace):
+    """Analyze the trajectory of relevant documents through retrieval stages."""
+
+    analysis = {}
+
+    for document_id in relevant_documents:
+        positions = {}
+
+        for stage in RETRIEVAL_STAGES:
+            stage_results = trace.get(stage, [])
+
+            position = None
+
+            for result in stage_results:
+                if result["document_id"] == document_id:
+                    position = result["rank"]
+                    break
+        
+            positions[stage] = position
+
+        first_seen_stage = None
+        last_seen_stage = None
+
+        for stage in RETRIEVAL_STAGES:
+            if positions[stage] is not None:
+                if first_seen_stage is None:
+                    first_seen_stage = stage
+
+                last_seen_stage = stage
+
+        failure_stage = None
+
+        if last_seen_stage is not None and last_seen_stage != RETRIEVAL_STAGES[-1]:
+            last_seen_index = RETRIEVAL_STAGES.index(last_seen_stage)
+            failure_stage = RETRIEVAL_STAGES[last_seen_index + 1]
+
+        if first_seen_stage is None:
+            failure_reason = "never_retrieved"
+        elif failure_stage is not None:
+            failure_reason = "lost_after_retrieval"
+        else:
+            failure_reason = "success"
+
+        analysis[document_id] = {
+            "positions": positions,
+            "first_seen_stage": first_seen_stage,
+            "last_seen_stage": last_seen_stage,
+            "failure_stage": failure_stage,
+            "failure_reason": failure_reason,
+        }
+
+    return analysis
+
 def diagnose_retrieval_quality(metrics):
 
     recall    = metrics["recall_at_k"]
