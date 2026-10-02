@@ -1,7 +1,10 @@
 from src.retrieval.retrieval_evaluator import (
     analyze_retrieval_trace,
     evaluate_retrieval,
+    summarize_retrieval_failures,
 )
+
+import pytest
 
 def test_retrieval_complete():
     """Teste 1 — Retrieval completo (todos os relevantes encontrados)."""
@@ -302,7 +305,7 @@ def test_analyze_retrieval_trace():
     assert result["DOC_A"]["last_seen_stage"] == "final_results"
     assert result["DOC_A"]["failure_stage"] is None
 
-    assert result["DOC_B"]["failure_reason"] == "lost_after_retrieval"
+    assert result["DOC_B"]["failure_reason"] == "lost_before_final"
     assert result["DOC_B"]["last_seen_stage"] == "reranked_results"
     assert result["DOC_B"]["failure_stage"] == "final_results"
 
@@ -311,36 +314,186 @@ def test_analyze_retrieval_trace():
     assert result["DOC_X"]["last_seen_stage"] is None
     assert result["DOC_X"]["failure_stage"] is None
 
-# ==========================================================
-# Execução manual dos testes
-# ==========================================================
-if __name__ == "__main__":
+def test_document_lost_during_reranking():
+    relevant_documents = ["DOC_A"]
 
-    print("\n" + "=" * 60)
-    print("MATRIZ DE TESTES — EXERCÍCIO 120")
-    print("=" * 60 + "\n")
+    trace = {
+        "vector_results": [
+            {"document_id": "DOC_A", "rank": 2},
+        ],
+        "lexical_results": [],
+        "rrf_results": [
+            {"document_id": "DOC_A", "rank": 1},
+        ],
+        "reranked_results": [],
+        "final_results": [],
+    }
 
-    print("\n--- Testes de validação (120.1) ---")
-    test_retrieval_complete()
-    test_retrieval_partial()
-    test_retrieval_no_relevant_results()
-    test_retrieval_empty_golden()
-    test_retrieval_relevant_in_second_position()
+    result = analyze_retrieval_trace(relevant_documents, trace)
 
-    print("\n--- Testes de validação (120.2) ---")
-    test_invalid_k_zero()
-    test_duplicate_relevant_documents()
-    test_duplicate_rank()
-    test_rank_not_starting_at_one()
-    test_rank_boolean()
+    assert result["DOC_A"]["first_seen_stage"] == "vector_results"
+    assert result["DOC_A"]["last_seen_stage"] == "rrf_results"
+    assert result["DOC_A"]["failure_stage"] == "reranked_results"
+    assert result["DOC_A"]["failure_reason"] == "lost_during_reranking"
+    assert result["DOC_A"]["diagnostic_area"] == "reranking_or_reranking_cutoff"
 
-    print("\n--- Testes de validação (120.3) ---")
-    test_ranking_physical_order_consistency()
+def test_document_lost_during_fusion():
+    relevant_documents = ["DOC_A"]
 
-    print("\n--- Testes de validação (120.4) ---")
-    test_analyze_retrieval_trace()
+    trace = {
+        "vector_results": [
+            {"document_id": "DOC_A", "rank": 2},
+        ],
+        "lexical_results": [
+            {"document_id": "DOC_A", "rank": 1},
+        ],
+        "rrf_results": [],
+        "reranked_results": [],
+        "final_results": [],
+    }
 
-    print("\n" + "=" * 60)
-    #print("TODOS OS TESTES PASSARAM!")
-    print("=" * 60 + "\n")
+    result = analyze_retrieval_trace(relevant_documents, trace)
+
+    assert result["DOC_A"]["first_seen_stage"] == "vector_results"
+    assert result["DOC_A"]["last_seen_stage"] == "lexical_results"
+    assert result["DOC_A"]["failure_stage"] == "rrf_results"
+    assert result["DOC_A"]["failure_reason"] == "lost_during_fusion"
+
+def test_document_retrieved_only_by_vector_and_lost_before_fusion():
+    relevant_documents = ["DOC_A"]
+
+    trace = {
+        "vector_results": [
+            {"document_id": "DOC_A", "rank": 2},
+        ],
+        "lexical_results": [],
+        "rrf_results": [],
+        "reranked_results": [],
+        "final_results": [],
+    }
+
+    result = analyze_retrieval_trace(relevant_documents, trace)
+
+    assert result["DOC_A"]["first_seen_stage"] == "vector_results"
+    assert result["DOC_A"]["last_seen_stage"] == "vector_results"
+    assert result["DOC_A"]["failure_stage"] == "rrf_results"
+    assert result["DOC_A"]["failure_reason"] == "lost_during_fusion"
+
+def test_summarize_retrieval_failures():
+    trace_analysis = {
+        "DOC_A": {
+            "failure_reason": "success",
+        },
+        "DOC_B": {
+            "failure_reason": "lost_before_final",
+        },
+        "DOC_X": {
+            "failure_reason": "never_retrieved",
+        },
+    }
+
+    result = summarize_retrieval_failures(trace_analysis)
+
+    assert result["total_relevant"] == 3
+    assert result["success"] == 1
+    assert result["never_retrieved"] == 1
     
+    assert result["lost_before_final"] == 1
+    assert result["lost_during_fusion"] == 0
+    assert result["lost_during_reranking"] == 0
+    assert result["rates"]["success"] == pytest.approx(1 / 3)
+    assert result["rates"]["never_retrieved"] == pytest.approx(1 / 3)
+    assert result["rates"]["lost_before_final"] == pytest.approx(1 / 3)
+    assert result["rates"]["lost_during_fusion"] == 0.0
+    assert result["rates"]["lost_during_reranking"] == 0.0
+
+def test_summarize_retrieval_failures_without_relevant_documents():
+    trace_analysis = {}
+
+    result = summarize_retrieval_failures(trace_analysis)
+
+    assert result["total_relevant"] == 0
+    assert result["success"] == 0
+    assert result["never_retrieved"] == 0
+
+    assert result["rates"]["success"] is None
+    assert result["rates"]["never_retrieved"] is None
+    assert result["rates"]["lost_during_fusion"] is None
+    assert result["rates"]["lost_during_reranking"] is None
+    assert result["rates"]["lost_before_final"] is None
+    assert result["rates"]["lost_during_pipeline"] is None
+
+def test_evaluate_retrieval_with_failure_analysis():
+    relevant_documents = ["DOC_A", "DOC_B"]
+
+    retrieved_documents = [
+    {
+        "document_id": "DOC_A",
+        "chunk_id": "CHUNK_A1",
+        "rank": 1,
+    },
+]
+
+    trace = {
+        "vector_results": [
+            {"document_id": "DOC_A", "rank": 1},
+            {"document_id": "DOC_B", "rank": 2},
+        ],
+        "lexical_results": [
+            {"document_id": "DOC_B", "rank": 1},            
+        ],
+        "rrf_results": [
+            {"document_id": "DOC_A", "rank": 1},
+            {"document_id": "DOC_B", "rank": 2},
+        ],
+        "reranked_results": [
+            {"document_id": "DOC_A", "rank": 1},
+            {"document_id": "DOC_B", "rank": 2},
+        ],
+        "final_results": [
+            {"document_id": "DOC_A", "rank": 1},
+        ],
+    }
+
+    result = evaluate_retrieval(
+        relevant_documents,
+        retrieved_documents,
+        k=1,
+        trace=trace,
+    )
+
+    assert result["failure_analysis"]["DOC_A"]["failure_reason"] == "success"
+    assert (
+        result["failure_analysis"]["DOC_B"]["failure_reason"]
+        == "lost_before_final"
+    )
+
+    assert result["failure_summary"]["total_relevant"] == 2
+    assert result["failure_summary"]["success"] == 1
+    assert result["failure_summary"]["lost_before_final"] == 1
+
+    assert result["metrics"]["recall_at_k"] == pytest.approx(0.5)
+    assert result["metrics"]["precision_at_k"] == pytest.approx(1.0)
+    assert result["metrics"]["reciprocal_rank"] == pytest.approx(1.0)
+
+def test_evaluate_retrieval_with_incomplete_trace():
+    relevant_documents = ["DOC_A"]
+
+    retrieval_documents = [
+        {
+            "document_id": "DOC_A",
+            "chunk_id": "CHUNK_A1",
+            "rank": 1,
+        },
+    ]
+
+    incomplete_trace = {}
+
+    with pytest.raises(ValueError):
+        evaluate_retrieval(
+            relevant_documents,
+            retrieval_documents,
+            k=1,
+            trace=incomplete_trace,
+        )
+

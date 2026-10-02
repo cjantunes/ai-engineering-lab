@@ -10,6 +10,61 @@ RETRIEVAL_STAGES = (
     "final_results",
 )
 
+def identify_failure_stage(positions):
+    """Identify the pipeline stage where a relevant document was lost."""
+
+    retrieved = (
+        positions["vector_results"] is not None
+        or positions["lexical_results"] is not None
+    )
+
+    if retrieved and positions["rrf_results"] is None:
+        return "rrf_results"
+
+    if positions["rrf_results"] is not None and positions["reranked_results"] is None:
+        return "reranked_results"
+
+    if positions["reranked_results"] is not None and positions["final_results"] is None:
+        return "final_results"
+
+    return None
+
+def classify_retrieval_failure(first_seen_stage, failure_stage):
+    """Classify an observed retrieval failure."""
+
+    if first_seen_stage is None:
+        return "never_retrieved"
+    
+    if failure_stage == "rrf_results":
+        return "lost_during_fusion"
+    
+    if failure_stage == "reranked_results":
+        return "lost_during_reranking"
+    
+    if failure_stage == "final_results":
+        return "lost_before_final"
+    
+    if failure_stage is not None:
+        return "lost_during_pipeline"
+    
+    return "success"
+
+def suggest_diagnostic_area(failure_reason):
+    '''Provide a diagnostic hypothesis based on the observed failure.'''
+
+    if failure_reason == "never_retrieved":
+        return "retrieval_candidate_generation"
+    
+    if failure_reason == "lost_during_fusion":
+        return "fusion_or_candiate_cutoff"
+    
+    if failure_reason == "lost_during_reranking":
+        return "reranking_or_reranking_cutoff"
+    
+    if failure_reason == "lost_before_final":
+        return "final_selection_or_context_cutoff"
+    
+    return None
 
 def analyze_retrieval_trace(relevant_documents, trace):
     """Analyze the trajectory of relevant documents through retrieval stages."""
@@ -41,18 +96,14 @@ def analyze_retrieval_trace(relevant_documents, trace):
 
                 last_seen_stage = stage
 
-        failure_stage = None
+        failure_stage = identify_failure_stage(positions)
 
-        if last_seen_stage is not None and last_seen_stage != RETRIEVAL_STAGES[-1]:
-            last_seen_index = RETRIEVAL_STAGES.index(last_seen_stage)
-            failure_stage = RETRIEVAL_STAGES[last_seen_index + 1]
+        failure_reason = classify_retrieval_failure(
+            first_seen_stage,
+            failure_stage,
+        )    
 
-        if first_seen_stage is None:
-            failure_reason = "never_retrieved"
-        elif failure_stage is not None:
-            failure_reason = "lost_after_retrieval"
-        else:
-            failure_reason = "success"
+        diagnostic_area = suggest_diagnostic_area(failure_reason)                                             
 
         analysis[document_id] = {
             "positions": positions,
@@ -60,9 +111,52 @@ def analyze_retrieval_trace(relevant_documents, trace):
             "last_seen_stage": last_seen_stage,
             "failure_stage": failure_stage,
             "failure_reason": failure_reason,
+            "diagnostic_area": diagnostic_area,
         }
 
     return analysis
+
+def summarize_retrieval_failures(trace_analysis):
+    """Summarize failure classifications across relevant documents."""
+    
+    summary = {
+        "total_relevant": len(trace_analysis),
+        "success": 0,
+        "never_retrieved": 0,
+        "lost_during_fusion": 0,
+        "lost_during_reranking": 0,
+        "lost_before_final": 0,
+        "lost_during_pipeline": 0,
+    }
+
+    for document_analysis in trace_analysis.values():
+        failure_reason = document_analysis["failure_reason"]
+
+        if failure_reason in summary:
+            summary[failure_reason] += 1
+
+    total_relevant = summary["total_relevant"]
+
+    rates = {}
+
+    for failure_reason in (
+        "success",
+        "never_retrieved",
+        "lost_during_fusion",
+        "lost_during_reranking",
+        "lost_before_final",
+        "lost_during_pipeline",
+    ):
+        if total_relevant == 0:
+            rates[failure_reason] = None
+        else:
+            rates[failure_reason] = (
+                summary[failure_reason] / total_relevant
+            )
+
+    summary["rates"] = rates
+
+    return summary
 
 def diagnose_retrieval_quality(metrics):
 
@@ -239,6 +333,24 @@ def validate_retrieved_documents(retrieved_documents):
     
     return True
 
+def validate_retrieval_trace(trace):
+    """Validate the structure of a retrieval trace"""
+
+    if not isinstance(trace, dict):
+        raise TypeError(
+            f"trace deve ser um dicionário. "
+            f"Recebido: {type(trace).__name__}"
+        )
+    
+    missing_stages = set(RETRIEVAL_STAGES) - set(trace.keys())
+
+    if missing_stages:
+        raise ValueError(
+            "trace está faltando estágios obrigatórios: "
+            + ", ".join(sorted(missing_stages))
+        )
+
+
 def deduplicate_documents(retrieved_documents):
     '''
     Remove duplicatas de documentos mantendo a primeira ocorrência
@@ -387,7 +499,8 @@ def calculate_metrics(relevant_documents, top_k_documents):
 def evaluate_retrieval(
     relevant_documents,
     retrieved_documents,
-    k
+    k,
+    trace=None,
 ):
     validate_retrieval_input(relevant_documents, retrieved_documents, k)
             
@@ -406,6 +519,22 @@ def evaluate_retrieval(
         # 5- Classificação
         quality = classify_retrieval_quality(metrics)
         diagnosis = diagnose_retrieval_quality(metrics) 
+
+        failure_analysis = None
+        failure_summary = None
+
+        if trace is not None:
+            validate_retrieval_trace(trace)
+
+            failure_analysis = analyze_retrieval_trace(
+                relevant_documents,
+                trace,
+            )
+
+            failure_summary = summarize_retrieval_failures(
+                failure_analysis
+            )
+
         # 6-Montar resultado final
         return {
             "deduplicated_documents": deduplicated_documents,
@@ -415,11 +544,15 @@ def evaluate_retrieval(
             "false_positives": false_positives,
             "metrics": metrics,
             "quality": quality,
-            "diagnosis": diagnosis
+            "diagnosis": diagnosis,
+            "failure_analysis": failure_analysis,
+            "failure_summary": failure_summary,
         }
        
+    except (TypeError, ValueError):
+        raise
+
     except Exception as e:
-        # Relançamos a exceção com contexto adicional
-        raise RuntimeError(f"Erro durante a execução do pipeline: {str(e)}") from e
-
-
+        raise RuntimeError(
+            f"Erro durante a execução do pipeline: {str(e)}"
+        ) from e
